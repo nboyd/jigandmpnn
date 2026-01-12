@@ -1,6 +1,7 @@
 """Tests for ProteinMPNN.score() comparing JAX and PyTorch implementations."""
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -174,8 +175,8 @@ def test_score_proteinmpnn_use_sequence():
         else:
             feature_dict_jax[k] = v
 
-    # Run JAX
-    jax_result = jax_model.score(feature_dict_jax, use_sequence=True)
+    # Run JAX (key is unused since randn is in feature_dict)
+    jax_result = jax_model.score(feature_dict_jax, key=jax.random.PRNGKey(0), use_sequence=True)
 
     # Compare decoding order
     np.testing.assert_array_equal(
@@ -221,8 +222,8 @@ def test_score_proteinmpnn_no_sequence():
         else:
             feature_dict_jax[k] = v
 
-    # Run JAX
-    jax_result = jax_model.score(feature_dict_jax, use_sequence=False)
+    # Run JAX (key is unused since randn is in feature_dict)
+    jax_result = jax_model.score(feature_dict_jax, key=jax.random.PRNGKey(0), use_sequence=False)
 
     # Compare log_probs (slightly higher tolerance due to accumulated numerical differences)
     np.testing.assert_allclose(
@@ -259,8 +260,8 @@ def test_score_proteinmpnn_partial_mask():
         else:
             feature_dict_jax[k] = v
 
-    # Run JAX
-    jax_result = jax_model.score(feature_dict_jax, use_sequence=True)
+    # Run JAX (key is unused since randn is in feature_dict)
+    jax_result = jax_model.score(feature_dict_jax, key=jax.random.PRNGKey(0), use_sequence=True)
 
     # Compare results
     np.testing.assert_array_equal(
@@ -292,7 +293,7 @@ def test_score_proteinmpnn_output_shapes():
         else:
             feature_dict_jax[k] = v
 
-    result = jax_model.score(feature_dict_jax, use_sequence=True)
+    result = jax_model.score(feature_dict_jax, key=jax.random.PRNGKey(0), use_sequence=True)
 
     # Check shapes
     assert result["S"].shape == (B, L), f"S shape: {result['S'].shape}"
@@ -326,8 +327,8 @@ def test_score_ligandmpnn_use_sequence():
         else:
             feature_dict_jax[k] = v
 
-    # Run JAX
-    jax_result = jax_model.score(feature_dict_jax, use_sequence=True)
+    # Run JAX (key is unused since randn is in feature_dict)
+    jax_result = jax_model.score(feature_dict_jax, key=jax.random.PRNGKey(0), use_sequence=True)
 
     # Compare decoding order
     np.testing.assert_array_equal(
@@ -368,8 +369,8 @@ def test_score_proteinmpnn_jit():
         else:
             feature_dict_jax[k] = v
 
-    # First call triggers compilation
-    jax_result = score_jit(feature_dict_jax, use_sequence=True)
+    # First call triggers compilation (key is unused since randn is in feature_dict)
+    jax_result = score_jit(feature_dict_jax, key=jax.random.PRNGKey(0), use_sequence=True)
 
     # Verify JIT results match PyTorch
     np.testing.assert_allclose(
@@ -380,7 +381,7 @@ def test_score_proteinmpnn_jit():
     )
 
     # Second call uses cached compilation
-    jax_result2 = score_jit(feature_dict_jax, use_sequence=True)
+    jax_result2 = score_jit(feature_dict_jax, key=jax.random.PRNGKey(0), use_sequence=True)
 
     np.testing.assert_allclose(
         np.array(jax_result["log_probs"]),
@@ -405,7 +406,7 @@ def test_score_log_probs_sum():
         else:
             feature_dict_jax[k] = v
 
-    result = jax_model.score(feature_dict_jax, use_sequence=True)
+    result = jax_model.score(feature_dict_jax, key=jax.random.PRNGKey(0), use_sequence=True)
 
     # log_softmax means exp(log_probs).sum() = 1, so logsumexp(log_probs) = 0
     log_sum = jax.scipy.special.logsumexp(result["log_probs"], axis=-1)

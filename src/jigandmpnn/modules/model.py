@@ -164,8 +164,10 @@ class ProteinMPNN(eqx.Module):
     def score(
         self,
         feature_dict: dict,
+        *,
+        key: PRNGKeyArray,
         use_sequence: bool = True,
-        key: PRNGKeyArray | None = None,
+        key_augment: PRNGKeyArray | None = None,
     ) -> dict:
         """Compute log-probabilities for a given sequence.
 
@@ -179,14 +181,17 @@ class ProteinMPNN(eqx.Module):
                 - mask: Position mask [B, N]
                 - R_idx: Residue indices [B, N]
                 - chain_labels: Chain labels [B, N]
-                - chain_mask: Design mask [B, N] (1.0 = design, 0.0 = fixed)
-                - randn: Random numbers for decoding order [B, N]
+                - chain_mask: Design mask [B, N] (1.0 = design, 0.0 = fixed).
+                    Defaults to all 1s (design all positions).
+                - decoding_order_noise: Random numbers for decoding order [B, N].
+                    Positions are decoded in order of (chain_mask + eps) * |noise|.
+                    Defaults to random values generated from the provided key.
                 For ligand_mpnn, additionally:
                 - Y, Y_t, Y_m: Ligand features
+            key: PRNG key for random decoding order.
             use_sequence: If True, use teacher forcing (see true sequence during decoding).
                          If False, only use encoder information.
-            key: Optional PRNG key for coordinate noise (augment_eps).
-                 If None and augment_eps > 0, no noise is added.
+            key_augment: Optional PRNG key for coordinate noise (augment_eps).
 
         Returns:
             Dictionary containing:
@@ -197,20 +202,30 @@ class ProteinMPNN(eqx.Module):
         """
         S_true = feature_dict["S"]
         mask = feature_dict["mask"]
-        chain_mask = feature_dict["chain_mask"]
-        randn = feature_dict["randn"]
-
         B, L = S_true.shape
 
+        # Default chain_mask: design all positions
+        chain_mask = feature_dict.get("chain_mask", jnp.ones((B, L)))
+
+        # Default decoding_order_noise: random values for randomized decoding order
+        # Also support legacy "randn" key for backwards compatibility
+        if "decoding_order_noise" in feature_dict:
+            decoding_order_noise = feature_dict["decoding_order_noise"]
+        elif "randn" in feature_dict:
+            decoding_order_noise = feature_dict["randn"]
+        else:
+            # Generate random values for decoding order using the provided key
+            decoding_order_noise = jax.random.normal(key, (B, L))
+
         # Encode structure
-        h_V, h_E, E_idx = self.encode(feature_dict, key=key)
+        h_V, h_E, E_idx = self.encode(feature_dict, key=key_augment)
 
         # Update chain_mask to include missing regions
         chain_mask = mask * chain_mask
 
         # Compute decoding order: positions with chain_mask=0 decoded first (fixed),
         # then positions with chain_mask=1 (to be designed)
-        decoding_order = jnp.argsort((chain_mask + 0.0001) * jnp.abs(randn), axis=-1)
+        decoding_order = jnp.argsort((chain_mask + 0.0001) * jnp.abs(decoding_order_noise), axis=-1)
 
         # Build permutation matrix for decoding order
         permutation_matrix_reverse = jnn.one_hot(decoding_order, num_classes=L)
@@ -292,9 +307,13 @@ class ProteinMPNN(eqx.Module):
                 - mask: Position mask [B, N]
                 - R_idx: Residue indices [B, N]
                 - chain_labels: Chain labels [B, N]
-                - chain_mask: Design mask [B, N] (1.0 = design, 0.0 = fixed)
-                - randn: Random numbers for decoding order [B, N]
-                - bias: Amino acid bias per position [B, N, 21]
+                - chain_mask: Design mask [B, N] (1.0 = design, 0.0 = fixed).
+                    Defaults to all 1s (design all positions).
+                - decoding_order_noise: Random numbers for decoding order [B, N].
+                    Positions are decoded in order of (chain_mask + eps) * |noise|.
+                    Defaults to random values generated from the provided key.
+                - bias: Amino acid bias per position [B, N, 21].
+                    Defaults to zeros (no bias).
                 For ligand_mpnn, additionally:
                 - Y, Y_t, Y_m: Ligand features
             key: PRNG key for sampling.
@@ -310,11 +329,24 @@ class ProteinMPNN(eqx.Module):
         """
         S_true = feature_dict["S"]
         mask = feature_dict["mask"]
-        chain_mask = feature_dict["chain_mask"]
-        randn = feature_dict["randn"]
-        bias = feature_dict["bias"]
-
         B, L = S_true.shape
+
+        # Default chain_mask: design all positions
+        chain_mask = feature_dict.get("chain_mask", jnp.ones((B, L)))
+
+        # Default decoding_order_noise: random values for randomized decoding order
+        # Also support legacy "randn" key for backwards compatibility
+        if "decoding_order_noise" in feature_dict:
+            decoding_order_noise = feature_dict["decoding_order_noise"]
+        elif "randn" in feature_dict:
+            decoding_order_noise = feature_dict["randn"]
+        else:
+            # Generate random values for decoding order using a split of the key
+            key, order_key = jax.random.split(key)
+            decoding_order_noise = jax.random.normal(order_key, (B, L))
+
+        # Default bias: no bias
+        bias = feature_dict.get("bias", jnp.zeros((B, L, 21)))
 
         # Encode structure
         h_V, h_E, E_idx = self.encode(feature_dict, key=key_augment)
@@ -323,7 +355,7 @@ class ProteinMPNN(eqx.Module):
         chain_mask = mask * chain_mask
 
         # Compute decoding order
-        decoding_order = jnp.argsort((chain_mask + 0.0001) * jnp.abs(randn), axis=-1)
+        decoding_order = jnp.argsort((chain_mask + 0.0001) * jnp.abs(decoding_order_noise), axis=-1)
 
         # Build permutation matrix for decoding order
         permutation_matrix_reverse = jnn.one_hot(decoding_order, num_classes=L)

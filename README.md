@@ -53,7 +53,8 @@ print(result["S"])  # Sampled sequences
 ### Score sequences
 
 ```python
-result = model.score(feature_dict_jax, use_sequence=True)
+key = jax.random.PRNGKey(42)
+result = model.score(feature_dict_jax, key=key, use_sequence=True)
 print(result["log_probs"])  # Log probabilities [B, L, 21]
 ```
 
