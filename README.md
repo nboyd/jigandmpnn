@@ -5,13 +5,13 @@ JAX/Equinox translation of [LigandMPNN](https://github.com/dauparas/LigandMPNN) 
 ## Installation
 
 ```bash
-pip install jigandmpnn
+pip install git+https://github.com/nboyd/jigandmpnn
 ```
 
 Or with uv:
 
 ```bash
-uv add jigandmpnn
+uv add git+https://github.com/nboyd/jigandmpnn
 ```
 
 ## Quick Start
