@@ -151,20 +151,20 @@ def test_score_proteinmpnn_use_sequence():
     )
 
     np.testing.assert_array_equal(
-        np.array(jax_result["decoding_order"]),
+        np.array(jax_result.decoding_order),
         torch_result["decoding_order"].numpy(),
         err_msg="score() decoding_order mismatch",
     )
 
     np.testing.assert_allclose(
-        np.array(jax_result["log_probs"]),
+        np.array(jax_result.log_probs),
         torch_result["log_probs"].numpy(),
         atol=1e-4,
         err_msg="score() log_probs mismatch",
     )
 
     np.testing.assert_allclose(
-        np.array(jax_result["logits"]),
+        np.array(jax_result.logits),
         torch_result["logits"].numpy(),
         atol=1e-4,
         err_msg="score() logits mismatch",
@@ -189,7 +189,7 @@ def test_score_proteinmpnn_no_sequence():
     )
 
     np.testing.assert_allclose(
-        np.array(jax_result["log_probs"]),
+        np.array(jax_result.log_probs),
         torch_result["log_probs"].numpy(),
         atol=5e-4,
         err_msg="score(use_sequence=False) log_probs mismatch",
@@ -220,13 +220,13 @@ def test_score_proteinmpnn_partial_mask():
     )
 
     np.testing.assert_array_equal(
-        np.array(jax_result["decoding_order"]),
+        np.array(jax_result.decoding_order),
         torch_result["decoding_order"].numpy(),
         err_msg="score() partial mask decoding_order mismatch",
     )
 
     np.testing.assert_allclose(
-        np.array(jax_result["log_probs"]),
+        np.array(jax_result.log_probs),
         torch_result["log_probs"].numpy(),
         atol=1e-4,
         err_msg="score() partial mask log_probs mismatch",
@@ -247,14 +247,14 @@ def test_score_proteinmpnn_output_shapes():
         use_sequence=True,
     )
 
-    assert result["S"].shape == (B, L), f"S shape: {result['S'].shape}"
-    assert result["log_probs"].shape == (B, L, 21), f"log_probs shape: {result['log_probs'].shape}"
-    assert result["logits"].shape == (B, L, 21), f"logits shape: {result['logits'].shape}"
-    assert result["decoding_order"].shape == (B, L), f"decoding_order shape: {result['decoding_order'].shape}"
+    assert result.S.shape == (B, L), f"S shape: {result.S.shape}"
+    assert result.log_probs.shape == (B, L, 21), f"log_probs shape: {result.log_probs.shape}"
+    assert result.logits.shape == (B, L, 21), f"logits shape: {result.logits.shape}"
+    assert result.decoding_order.shape == (B, L), f"decoding_order shape: {result.decoding_order.shape}"
 
-    assert result["log_probs"].dtype == jnp.float32
-    assert result["logits"].dtype == jnp.float32
-    assert result["decoding_order"].dtype == jnp.int32
+    assert result.log_probs.dtype == jnp.float32
+    assert result.logits.dtype == jnp.float32
+    assert result.decoding_order.dtype == jnp.int32
 
 
 def test_score_ligandmpnn_use_sequence():
@@ -275,13 +275,13 @@ def test_score_ligandmpnn_use_sequence():
     )
 
     np.testing.assert_array_equal(
-        np.array(jax_result["decoding_order"]),
+        np.array(jax_result.decoding_order),
         torch_result["decoding_order"].numpy(),
         err_msg="ligand_mpnn score() decoding_order mismatch",
     )
 
     np.testing.assert_allclose(
-        np.array(jax_result["log_probs"]),
+        np.array(jax_result.log_probs),
         torch_result["log_probs"].numpy(),
         atol=1e-4,
         err_msg="ligand_mpnn score() log_probs mismatch",
@@ -306,7 +306,7 @@ def test_score_proteinmpnn_jit():
     jax_result = score_jit(**jax_kwargs, key=jax.random.PRNGKey(0), use_sequence=True)
 
     np.testing.assert_allclose(
-        np.array(jax_result["log_probs"]),
+        np.array(jax_result.log_probs),
         torch_result["log_probs"].numpy(),
         atol=1e-4,
         err_msg="JIT score() log_probs mismatch",
@@ -315,8 +315,8 @@ def test_score_proteinmpnn_jit():
     jax_result2 = score_jit(**jax_kwargs, key=jax.random.PRNGKey(0), use_sequence=True)
 
     np.testing.assert_allclose(
-        np.array(jax_result["log_probs"]),
-        np.array(jax_result2["log_probs"]),
+        np.array(jax_result.log_probs),
+        np.array(jax_result2.log_probs),
         atol=1e-6,
         err_msg="JIT score() not deterministic",
     )
@@ -336,7 +336,7 @@ def test_score_log_probs_sum():
         use_sequence=True,
     )
 
-    log_sum = jax.scipy.special.logsumexp(result["log_probs"], axis=-1)
+    log_sum = jax.scipy.special.logsumexp(result.log_probs, axis=-1)
     np.testing.assert_allclose(
         np.array(log_sum),
         np.zeros((B, L)),

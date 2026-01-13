@@ -147,14 +147,14 @@ def test_sample_proteinmpnn_output_shapes():
     key = jax.random.PRNGKey(42)
     result = jax_model.sample(**to_jax_sample_kwargs(feature_dict), key=key)
 
-    assert result["S"].shape == (B, L), f"S shape: {result['S'].shape}"
-    assert result["sampling_probs"].shape == (B, L, 20), f"sampling_probs shape: {result['sampling_probs'].shape}"
-    assert result["log_probs"].shape == (B, L, 21), f"log_probs shape: {result['log_probs'].shape}"
-    assert result["decoding_order"].shape == (B, L), f"decoding_order shape: {result['decoding_order'].shape}"
+    assert result.S.shape == (B, L), f"S shape: {result.S.shape}"
+    assert result.sampling_probs.shape == (B, L, 20), f"sampling_probs shape: {result.sampling_probs.shape}"
+    assert result.log_probs.shape == (B, L, 21), f"log_probs shape: {result.log_probs.shape}"
+    assert result.decoding_order.shape == (B, L), f"decoding_order shape: {result.decoding_order.shape}"
 
-    assert result["S"].dtype == jnp.int32
-    assert result["sampling_probs"].dtype == jnp.float32
-    assert result["log_probs"].dtype == jnp.float32
+    assert result.S.dtype == jnp.int32
+    assert result.sampling_probs.dtype == jnp.float32
+    assert result.log_probs.dtype == jnp.float32
 
 
 def test_sample_proteinmpnn_deterministic():
@@ -172,14 +172,14 @@ def test_sample_proteinmpnn_deterministic():
     result2 = jax_model.sample(**jax_kwargs, key=key)
 
     np.testing.assert_array_equal(
-        np.array(result1["S"]),
-        np.array(result2["S"]),
+        np.array(result1.S),
+        np.array(result2.S),
         err_msg="Same key should produce same S",
     )
 
     np.testing.assert_allclose(
-        np.array(result1["sampling_probs"]),
-        np.array(result2["sampling_probs"]),
+        np.array(result1.sampling_probs),
+        np.array(result2.sampling_probs),
         atol=1e-6,
         err_msg="Same key should produce same sampling_probs",
     )
@@ -202,15 +202,15 @@ def test_sample_proteinmpnn_different_keys():
 
     # Decoding order should be the same since it's determined by randn
     np.testing.assert_array_equal(
-        np.array(result1["decoding_order"]),
-        np.array(result2["decoding_order"]),
+        np.array(result1.decoding_order),
+        np.array(result2.decoding_order),
         err_msg="Decoding order should be deterministic",
     )
 
     # Sequences should differ (with high probability)
     assert not np.array_equal(
-        np.array(result1["S"]),
-        np.array(result2["S"]),
+        np.array(result1.S),
+        np.array(result2.S),
     ), "Different keys should produce different sequences"
 
 
@@ -232,7 +232,7 @@ def test_sample_proteinmpnn_fixed_positions():
     result = jax_model.sample(**to_jax_sample_kwargs(feature_dict), key=key)
 
     S_true = feature_dict["S"].numpy()
-    S_sampled = np.array(result["S"])
+    S_sampled = np.array(result.S)
 
     np.testing.assert_array_equal(
         S_sampled[:, :10],
@@ -258,7 +258,7 @@ def test_sample_proteinmpnn_probs_sum_to_one():
     key = jax.random.PRNGKey(42)
     result = jax_model.sample(**to_jax_sample_kwargs(feature_dict), key=key)
 
-    prob_sums = np.sum(np.array(result["sampling_probs"]), axis=-1)
+    prob_sums = np.sum(np.array(result.sampling_probs), axis=-1)
     np.testing.assert_allclose(
         prob_sums,
         np.ones((B, L)),
@@ -278,7 +278,7 @@ def test_sample_proteinmpnn_valid_amino_acids():
     key = jax.random.PRNGKey(42)
     result = jax_model.sample(**to_jax_sample_kwargs(feature_dict), key=key)
 
-    S = np.array(result["S"])
+    S = np.array(result.S)
     assert np.all(S >= 0), "Amino acids should be >= 0"
     assert np.all(S <= 20), "Amino acids should be <= 20"
 
@@ -296,8 +296,8 @@ def test_sample_proteinmpnn_temperature():
     result_low_temp = jax_model.sample(**jax_kwargs, key=key, temperature=0.1)
     result_high_temp = jax_model.sample(**jax_kwargs, key=key, temperature=2.0)
 
-    max_prob_low = np.max(np.array(result_low_temp["sampling_probs"]), axis=-1)
-    max_prob_high = np.max(np.array(result_high_temp["sampling_probs"]), axis=-1)
+    max_prob_low = np.max(np.array(result_low_temp.sampling_probs), axis=-1)
+    max_prob_high = np.max(np.array(result_high_temp.sampling_probs), axis=-1)
 
     assert np.mean(max_prob_low) > np.mean(max_prob_high), \
         "Low temperature should produce more confident predictions"
@@ -318,7 +318,7 @@ def test_sample_proteinmpnn_decoding_order_matches_torch():
     jax_result = jax_model.sample(**to_jax_sample_kwargs(feature_dict), key=key)
 
     np.testing.assert_array_equal(
-        np.array(jax_result["decoding_order"]),
+        np.array(jax_result.decoding_order),
         torch_result["decoding_order"].numpy(),
         err_msg="Decoding order should match PyTorch",
     )
@@ -335,10 +335,10 @@ def test_sample_ligandmpnn_output_shapes():
     key = jax.random.PRNGKey(42)
     result = jax_model.sample(**to_jax_sample_kwargs(feature_dict, include_ligand=True), key=key)
 
-    assert result["S"].shape == (B, L), f"S shape: {result['S'].shape}"
-    assert result["sampling_probs"].shape == (B, L, 20)
-    assert result["log_probs"].shape == (B, L, 21)
-    assert result["decoding_order"].shape == (B, L)
+    assert result.S.shape == (B, L), f"S shape: {result.S.shape}"
+    assert result.sampling_probs.shape == (B, L, 20)
+    assert result.log_probs.shape == (B, L, 21)
+    assert result.decoding_order.shape == (B, L)
 
 
 def test_sample_proteinmpnn_jit():
@@ -358,14 +358,14 @@ def test_sample_proteinmpnn_jit():
     result2 = sample_jit(**jax_kwargs, key=key)
 
     np.testing.assert_array_equal(
-        np.array(result1["S"]),
-        np.array(result2["S"]),
+        np.array(result1.S),
+        np.array(result2.S),
         err_msg="JIT sample() should be deterministic",
     )
 
     np.testing.assert_allclose(
-        np.array(result1["sampling_probs"]),
-        np.array(result2["sampling_probs"]),
+        np.array(result1.sampling_probs),
+        np.array(result2.sampling_probs),
         atol=1e-6,
         err_msg="JIT sample() probs should match",
     )

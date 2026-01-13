@@ -20,6 +20,38 @@ if TYPE_CHECKING:
     pass
 
 
+class SampleResult(eqx.Module):
+    """Result from ProteinMPNN.sample()."""
+
+    S: Int[Array, "B N"]
+    """Sampled sequences."""
+
+    sampling_probs: Float[Array, "B N 20"]
+    """Sampling probabilities for each amino acid (excluding X)."""
+
+    log_probs: Float[Array, "B N 21"]
+    """Log probabilities for all 21 tokens."""
+
+    decoding_order: Int[Array, "B N"]
+    """Order in which positions were decoded."""
+
+
+class ScoreResult(eqx.Module):
+    """Result from ProteinMPNN.score()."""
+
+    S: Int[Array, "B N"]
+    """Input sequence."""
+
+    log_probs: Float[Array, "B N 21"]
+    """Log probabilities for all 21 tokens."""
+
+    logits: Float[Array, "B N 21"]
+    """Raw logits before softmax."""
+
+    decoding_order: Int[Array, "B N"]
+    """Order in which positions were decoded."""
+
+
 @register_from_torch(TorchProteinMPNN)
 class ProteinMPNN(eqx.Module):
     """ProteinMPNN model for protein sequence design.
@@ -188,7 +220,7 @@ class ProteinMPNN(eqx.Module):
         Y_t: Int[Array, "B N M"] | None = None,
         Y_m: Float[Array, "B N M"] | None = None,
         use_sequence: bool = True,
-    ) -> dict:
+    ) -> ScoreResult:
         """Compute log-probabilities for a given sequence.
 
         Args:
@@ -208,11 +240,7 @@ class ProteinMPNN(eqx.Module):
             use_sequence: If True, use teacher forcing during decoding.
 
         Returns:
-            Dictionary containing:
-                - S: Input sequence [B, N]
-                - log_probs: Log probabilities [B, N, 21]
-                - logits: Raw logits [B, N, 21]
-                - decoding_order: The order positions were decoded [B, N]
+            ScoreResult with S, log_probs, logits, and decoding_order.
         """
         B, L = S.shape
 
@@ -291,12 +319,12 @@ class ProteinMPNN(eqx.Module):
         logits = self.W_out(h_V)
         log_probs = jnn.log_softmax(logits, axis=-1)
 
-        return {
-            "S": S,
-            "log_probs": log_probs,
-            "logits": logits,
-            "decoding_order": decoding_order,
-        }
+        return ScoreResult(
+            S=S,
+            log_probs=log_probs,
+            logits=logits,
+            decoding_order=decoding_order,
+        )
 
     def sample(
         self,
@@ -314,7 +342,7 @@ class ProteinMPNN(eqx.Module):
         Y_t: Int[Array, "B N M"] | None = None,
         Y_m: Float[Array, "B N M"] | None = None,
         temperature: float = 1.0,
-    ) -> dict:
+    ) -> SampleResult:
         """Sample sequences autoregressively.
 
         Args:
@@ -336,11 +364,7 @@ class ProteinMPNN(eqx.Module):
             temperature: Sampling temperature. Higher = more random.
 
         Returns:
-            Dictionary containing:
-                - S: Sampled sequence [B, N]
-                - sampling_probs: Sampling probabilities [B, N, 20]
-                - log_probs: Log probabilities [B, N, 21]
-                - decoding_order: The order positions were decoded [B, N]
+            SampleResult with S, sampling_probs, log_probs, and decoding_order.
         """
         S_true = S  # Keep internal name for fixed positions
         B, L = S.shape
@@ -502,12 +526,12 @@ class ProteinMPNN(eqx.Module):
             decode_step, init_carry, xs
         )
 
-        return {
-            "S": S_final,
-            "sampling_probs": all_probs_final,
-            "log_probs": all_log_probs_final,
-            "decoding_order": decoding_order,
-        }
+        return SampleResult(
+            S=S_final,
+            sampling_probs=all_probs_final,
+            log_probs=all_log_probs_final,
+            decoding_order=decoding_order,
+        )
 
     @staticmethod
     def from_torch(m: TorchProteinMPNN) -> "ProteinMPNN":

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Literal, TYPE_CHECKING
 
 from jigandmpnn.backend import from_torch, register_from_torch
+from jigandmpnn.modules.model import SampleResult, ScoreResult
 
 if TYPE_CHECKING:
     from jigandmpnn.modules.model import ProteinMPNN
@@ -159,6 +160,8 @@ __all__ = [
     "list_weights",
     "load_protein_mpnn",
     "load_soluble_mpnn",
+    "SampleResult",
+    "ScoreResult",
     "WEIGHTS_DIR",
     "WEIGHT_FILES",
 ]
