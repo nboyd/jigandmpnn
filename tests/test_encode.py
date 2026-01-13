@@ -55,6 +55,16 @@ def create_synthetic_protein(B: int, L: int, seed: int = 42):
     }
 
 
+def to_jax_kwargs(feature_dict):
+    """Convert PyTorch feature dict to JAX kwargs for encode()."""
+    return {
+        "X": jnp.array(feature_dict["X"].numpy()),
+        "mask": jnp.array(feature_dict["mask"].numpy()),
+        "R_idx": jnp.array(feature_dict["R_idx"].numpy()),
+        "chain_labels": jnp.array(feature_dict["chain_labels"].numpy()),
+    }
+
+
 def load_pretrained_model():
     """Load pretrained ProteinMPNN model from checkpoint.
 
@@ -100,11 +110,8 @@ def test_encode_pretrained():
     with torch.no_grad():
         h_V_torch, h_E_torch, E_idx_torch = torch_model.encode(feature_dict)
 
-    # Convert inputs to JAX
-    feature_dict_jax = {k: jnp.array(v.numpy()) for k, v in feature_dict.items()}
-
     # Run JAX
-    h_V_jax, h_E_jax, E_idx_jax = jax_model.encode(feature_dict_jax)
+    h_V_jax, h_E_jax, E_idx_jax = jax_model.encode(**to_jax_kwargs(feature_dict))
 
     # Compare E_idx (should be identical)
     np.testing.assert_array_equal(
@@ -142,8 +149,7 @@ def test_encode_pretrained_different_lengths():
         with torch.no_grad():
             h_V_torch, h_E_torch, E_idx_torch = torch_model.encode(feature_dict)
 
-        feature_dict_jax = {k: jnp.array(v.numpy()) for k, v in feature_dict.items()}
-        h_V_jax, h_E_jax, E_idx_jax = jax_model.encode(feature_dict_jax)
+        h_V_jax, h_E_jax, E_idx_jax = jax_model.encode(**to_jax_kwargs(feature_dict))
 
         np.testing.assert_array_equal(
             np.array(E_idx_jax),
@@ -179,8 +185,7 @@ def test_encode_pretrained_multi_chain():
     with torch.no_grad():
         h_V_torch, h_E_torch, E_idx_torch = torch_model.encode(feature_dict)
 
-    feature_dict_jax = {k: jnp.array(v.numpy()) for k, v in feature_dict.items()}
-    h_V_jax, h_E_jax, E_idx_jax = jax_model.encode(feature_dict_jax)
+    h_V_jax, h_E_jax, E_idx_jax = jax_model.encode(**to_jax_kwargs(feature_dict))
 
     np.testing.assert_array_equal(
         np.array(E_idx_jax),
@@ -206,9 +211,8 @@ def test_encode_pretrained_output_shapes():
 
     B, L = 2, 50
     feature_dict = create_synthetic_protein(B, L)
-    feature_dict_jax = {k: jnp.array(v.numpy()) for k, v in feature_dict.items()}
 
-    h_V, h_E, E_idx = jax_model.encode(feature_dict_jax)
+    h_V, h_E, E_idx = jax_model.encode(**to_jax_kwargs(feature_dict))
 
     # Check shapes
     assert h_V.shape == (B, L, hidden_dim), f"h_V shape: {h_V.shape}"
@@ -235,11 +239,8 @@ def test_encode_pretrained_batch_consistency():
     }
 
     # Run JAX on both
-    feature_dict_single_jax = {k: jnp.array(v.numpy()) for k, v in feature_dict_single.items()}
-    feature_dict_batch_jax = {k: jnp.array(v.numpy()) for k, v in feature_dict_batch.items()}
-
-    h_V_single, h_E_single, E_idx_single = jax_model.encode(feature_dict_single_jax)
-    h_V_batch, h_E_batch, E_idx_batch = jax_model.encode(feature_dict_batch_jax)
+    h_V_single, h_E_single, E_idx_single = jax_model.encode(**to_jax_kwargs(feature_dict_single))
+    h_V_batch, h_E_batch, E_idx_batch = jax_model.encode(**to_jax_kwargs(feature_dict_batch))
 
     # First element of batch should match single (small numerical differences from batching)
     np.testing.assert_allclose(
@@ -273,10 +274,10 @@ def test_encode_pretrained_jit():
     with torch.no_grad():
         h_V_torch, h_E_torch, E_idx_torch = torch_model.encode(feature_dict)
 
-    feature_dict_jax = {k: jnp.array(v.numpy()) for k, v in feature_dict.items()}
+    jax_kwargs = to_jax_kwargs(feature_dict)
 
     # First call triggers compilation
-    h_V_jax, h_E_jax, E_idx_jax = encode_jit(feature_dict_jax)
+    h_V_jax, h_E_jax, E_idx_jax = encode_jit(**jax_kwargs)
 
     # Verify JIT results match PyTorch
     np.testing.assert_array_equal(
@@ -300,7 +301,7 @@ def test_encode_pretrained_jit():
     )
 
     # Second call uses cached compilation - should give same results
-    h_V_jax2, h_E_jax2, E_idx_jax2 = encode_jit(feature_dict_jax)
+    h_V_jax2, h_E_jax2, E_idx_jax2 = encode_jit(**jax_kwargs)
 
     np.testing.assert_array_equal(
         np.array(E_idx_jax),

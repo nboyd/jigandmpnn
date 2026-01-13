@@ -36,25 +36,34 @@ from jigandmpnn.vendor.ligandmpnn import parse_PDB, featurize
 # Load model
 model = load_protein_mpnn()
 
-# Prepare features
+# Prepare features from PDB
 protein_dict, *_ = parse_PDB("structure.pdb", device="cpu", chains=[])
 feature_dict = featurize(protein_dict, model_type="protein_mpnn")
 
 # Convert to JAX arrays
-feature_dict_jax = {k: jnp.array(v.numpy()) if hasattr(v, 'numpy') else v
-                    for k, v in feature_dict.items()}
+X = jnp.array(feature_dict["X"].numpy())
+S = jnp.array(feature_dict["S"].numpy())
+mask = jnp.array(feature_dict["mask"].numpy())
+R_idx = jnp.array(feature_dict["R_idx"].numpy())
+chain_labels = jnp.array(feature_dict["chain_labels"].numpy())
 
 # Sample
 key = jax.random.PRNGKey(42)
-result = model.sample(feature_dict_jax, key=key, temperature=0.1)
-print(result["S"])  # Sampled sequences
+result = model.sample(
+    X=X, S=S, mask=mask, R_idx=R_idx, chain_labels=chain_labels,
+    key=key, temperature=0.1
+)
+print(result["S"])  # Sampled sequences [B, L]
 ```
 
 ### Score sequences
 
 ```python
 key = jax.random.PRNGKey(42)
-result = model.score(feature_dict_jax, key=key, use_sequence=True)
+result = model.score(
+    X=X, S=S, mask=mask, R_idx=R_idx, chain_labels=chain_labels,
+    key=key, use_sequence=True
+)
 print(result["log_probs"])  # Log probabilities [B, L, 21]
 ```
 
@@ -112,14 +121,17 @@ import jax
 import equinox as eqx
 
 @eqx.filter_jit
-def sample_batch(model, feature_dict, keys):
+def sample_batch(model, X, S, mask, R_idx, chain_labels, keys):
     def sample_single(key):
-        return model.sample(feature_dict, key=key, temperature=0.1)
+        return model.sample(
+            X=X, S=S, mask=mask, R_idx=R_idx, chain_labels=chain_labels,
+            key=key, temperature=0.1
+        )
     return jax.vmap(sample_single)(keys)
 
 # Sample 512 sequences in parallel
 keys = jax.random.split(jax.random.PRNGKey(0), 512)
-result = sample_batch(model, feature_dict, keys)
+result = sample_batch(model, X, S, mask, R_idx, chain_labels, keys)
 ```
 
 Run benchmarks:

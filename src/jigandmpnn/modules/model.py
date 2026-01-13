@@ -57,7 +57,14 @@ class ProteinMPNN(eqx.Module):
 
     def encode(
         self,
-        feature_dict: dict,
+        *,
+        X: Float[Array, "B N 4 3"],
+        mask: Float[Array, "B N"],
+        R_idx: Int[Array, "B N"],
+        chain_labels: Int[Array, "B N"],
+        Y: Float[Array, "B N M 3"] | None = None,
+        Y_t: Int[Array, "B N M"] | None = None,
+        Y_m: Float[Array, "B N M"] | None = None,
         key: PRNGKeyArray | None = None,
     ) -> tuple[
         Float[Array, "B N hidden_dim"],
@@ -67,32 +74,37 @@ class ProteinMPNN(eqx.Module):
         """Encode protein structure into node and edge embeddings.
 
         Args:
-            feature_dict: Dictionary containing:
-                - X: Backbone coordinates [B, N, 4, 3]
-                - S: Sequence (integer encoded) [B, N]
-                - mask: Position mask [B, N]
-                - R_idx: Residue indices [B, N]
-                - chain_labels: Chain labels [B, N]
-                For ligand_mpnn, additionally:
-                - Y: Ligand atom coordinates [B, L, M, 3]
-                - Y_t: Ligand atom types [B, L, M]
-                - Y_m: Ligand atom mask [B, L, M]
+            X: Backbone coordinates [B, N, 4, 3] (N, CA, C, O atoms)
+            mask: Position mask [B, N] (1.0 = valid, 0.0 = padding)
+            R_idx: Residue indices [B, N]
+            chain_labels: Chain labels [B, N]
+            Y: Ligand atom coordinates [B, N, M, 3] (ligand_mpnn only)
+            Y_t: Ligand atom types [B, N, M] (ligand_mpnn only)
+            Y_m: Ligand atom mask [B, N, M] (ligand_mpnn only)
             key: Optional PRNG key for coordinate noise (augment_eps).
-                 If None and augment_eps > 0, no noise is added.
 
         Returns:
             h_V: Node embeddings [B, N, hidden_dim]
             h_E: Edge embeddings [B, N, K, hidden_dim]
             E_idx: Neighbor indices [B, N, K]
         """
-        S_true = feature_dict["S"]
-        mask = feature_dict["mask"]
+        B, L = mask.shape
 
-        B, L = S_true.shape
+        # Build feature dict for internal use (features module still uses dict)
+        feature_dict = {
+            "X": X,
+            "mask": mask,
+            "R_idx": R_idx,
+            "chain_labels": chain_labels,
+        }
+        if Y is not None:
+            feature_dict["Y"] = Y
+            feature_dict["Y_t"] = Y_t
+            feature_dict["Y_m"] = Y_m
 
         if self.model_type == "ligand_mpnn":
             # Extract features from ProteinFeaturesLigand
-            V, E, E_idx, Y_nodes, Y_edges, Y_m = self.features(feature_dict, key=key)
+            V, E, E_idx, Y_nodes, Y_edges, Y_m_out = self.features(feature_dict, key=key)
 
             # Initialize node embeddings to zero
             h_V = jnp.zeros((B, L, E.shape[-1]))
@@ -113,7 +125,7 @@ class ProteinMPNN(eqx.Module):
 
             # Ligand context processing
             h_V_C = self.W_c(h_V)
-            Y_m_edges = Y_m[:, :, :, None] * Y_m[:, :, None, :]
+            Y_m_edges = Y_m_out[:, :, :, None] * Y_m_out[:, :, None, :]
             Y_nodes = self.W_nodes_y(Y_nodes)
             Y_edges = self.W_edges_y(Y_edges)
 
@@ -121,13 +133,13 @@ class ProteinMPNN(eqx.Module):
             for i in range(len(self.context_encoder_layers)):
                 # Update ligand node embeddings
                 Y_nodes = self.y_context_encoder_layers[i](
-                    Y_nodes, Y_edges, Y_m, Y_m_edges
+                    Y_nodes, Y_edges, Y_m_out, Y_m_edges
                 )
                 # Concatenate context features
                 h_E_context_cat = jnp.concatenate([h_E_context, Y_nodes], axis=-1)
                 # Update protein node embeddings with context
                 h_V_C = self.context_encoder_layers[i](
-                    h_V_C, h_E_context_cat, mask, Y_m
+                    h_V_C, h_E_context_cat, mask, Y_m_out
                 )
 
             # Final context projection and residual
@@ -163,62 +175,60 @@ class ProteinMPNN(eqx.Module):
 
     def score(
         self,
-        feature_dict: dict,
         *,
+        X: Float[Array, "B N 4 3"],
+        S: Int[Array, "B N"],
+        mask: Float[Array, "B N"],
+        R_idx: Int[Array, "B N"],
+        chain_labels: Int[Array, "B N"],
         key: PRNGKeyArray,
+        chain_mask: Float[Array, "B N"] | None = None,
+        decoding_order_noise: Float[Array, "B N"] | None = None,
+        Y: Float[Array, "B N M 3"] | None = None,
+        Y_t: Int[Array, "B N M"] | None = None,
+        Y_m: Float[Array, "B N M"] | None = None,
         use_sequence: bool = True,
-        key_augment: PRNGKeyArray | None = None,
     ) -> dict:
         """Compute log-probabilities for a given sequence.
 
-        This method computes the log-likelihood of a sequence given the structure,
-        using autoregressive decoding with a specified decoding order.
-
         Args:
-            feature_dict: Dictionary containing:
-                - X: Backbone coordinates [B, N, 4, 3]
-                - S: Sequence (integer encoded) [B, N]
-                - mask: Position mask [B, N]
-                - R_idx: Residue indices [B, N]
-                - chain_labels: Chain labels [B, N]
-                - chain_mask: Design mask [B, N] (1.0 = design, 0.0 = fixed).
-                    Defaults to all 1s (design all positions).
-                - decoding_order_noise: Random numbers for decoding order [B, N].
-                    Positions are decoded in order of (chain_mask + eps) * |noise|.
-                    Defaults to random values generated from the provided key.
-                For ligand_mpnn, additionally:
-                - Y, Y_t, Y_m: Ligand features
-            key: PRNG key for random decoding order.
-            use_sequence: If True, use teacher forcing (see true sequence during decoding).
-                         If False, only use encoder information.
-            key_augment: Optional PRNG key for coordinate noise (augment_eps).
+            X: Backbone coordinates [B, N, 4, 3] (N, CA, C, O atoms)
+            S: Sequence (integer encoded) [B, N]
+            mask: Position mask [B, N] (1.0 = valid, 0.0 = padding)
+            R_idx: Residue indices [B, N]
+            chain_labels: Chain labels [B, N]
+            key: PRNG key for random decoding order
+            chain_mask: Design mask [B, N] (1.0 = design, 0.0 = fixed).
+                Defaults to all 1s (design all positions).
+            decoding_order_noise: Random numbers for decoding order [B, N].
+                Defaults to random values from key.
+            Y: Ligand atom coordinates [B, N, M, 3] (ligand_mpnn only)
+            Y_t: Ligand atom types [B, N, M] (ligand_mpnn only)
+            Y_m: Ligand atom mask [B, N, M] (ligand_mpnn only)
+            use_sequence: If True, use teacher forcing during decoding.
 
         Returns:
             Dictionary containing:
                 - S: Input sequence [B, N]
                 - log_probs: Log probabilities [B, N, 21]
                 - logits: Raw logits [B, N, 21]
-                - decoding_order: The order in which positions were decoded [B, N]
+                - decoding_order: The order positions were decoded [B, N]
         """
-        S_true = feature_dict["S"]
-        mask = feature_dict["mask"]
-        B, L = S_true.shape
+        B, L = S.shape
 
         # Default chain_mask: design all positions
-        chain_mask = feature_dict.get("chain_mask", jnp.ones((B, L)))
+        if chain_mask is None:
+            chain_mask = jnp.ones((B, L))
 
-        # Default decoding_order_noise: random values for randomized decoding order
-        # Also support legacy "randn" key for backwards compatibility
-        if "decoding_order_noise" in feature_dict:
-            decoding_order_noise = feature_dict["decoding_order_noise"]
-        elif "randn" in feature_dict:
-            decoding_order_noise = feature_dict["randn"]
-        else:
-            # Generate random values for decoding order using the provided key
+        # Default decoding_order_noise: random values
+        if decoding_order_noise is None:
             decoding_order_noise = jax.random.normal(key, (B, L))
 
         # Encode structure
-        h_V, h_E, E_idx = self.encode(feature_dict, key=key_augment)
+        h_V, h_E, E_idx = self.encode(
+            X=X, mask=mask, R_idx=R_idx, chain_labels=chain_labels,
+            Y=Y, Y_t=Y_t, Y_m=Y_m,
+        )
 
         # Update chain_mask to include missing regions
         chain_mask = mask * chain_mask
@@ -253,7 +263,7 @@ class ProteinMPNN(eqx.Module):
         mask_fw = mask_1D * (1.0 - mask_attend)
 
         # Embed the true sequence
-        h_S = self.W_s(S_true)
+        h_S = self.W_s(S)
 
         # Build context from sequence and edges
         h_ES = cat_neighbors_nodes(h_S, h_E, E_idx)
@@ -282,7 +292,7 @@ class ProteinMPNN(eqx.Module):
         log_probs = jnn.log_softmax(logits, axis=-1)
 
         return {
-            "S": S_true,
+            "S": S,
             "log_probs": log_probs,
             "logits": logits,
             "decoding_order": decoding_order,
@@ -290,66 +300,69 @@ class ProteinMPNN(eqx.Module):
 
     def sample(
         self,
-        feature_dict: dict,
+        *,
+        X: Float[Array, "B N 4 3"],
+        S: Int[Array, "B N"],
+        mask: Float[Array, "B N"],
+        R_idx: Int[Array, "B N"],
+        chain_labels: Int[Array, "B N"],
         key: PRNGKeyArray,
+        chain_mask: Float[Array, "B N"] | None = None,
+        decoding_order_noise: Float[Array, "B N"] | None = None,
+        bias: Float[Array, "B N 21"] | None = None,
+        Y: Float[Array, "B N M 3"] | None = None,
+        Y_t: Int[Array, "B N M"] | None = None,
+        Y_m: Float[Array, "B N M"] | None = None,
         temperature: float = 1.0,
-        key_augment: PRNGKeyArray | None = None,
     ) -> dict:
         """Sample sequences autoregressively.
 
-        This method generates new sequences by sampling from the predicted
-        distribution at each position, following a decoding order.
-
         Args:
-            feature_dict: Dictionary containing:
-                - X: Backbone coordinates [B, N, 4, 3]
-                - S: Sequence (integer encoded) [B, N] - used for fixed positions
-                - mask: Position mask [B, N]
-                - R_idx: Residue indices [B, N]
-                - chain_labels: Chain labels [B, N]
-                - chain_mask: Design mask [B, N] (1.0 = design, 0.0 = fixed).
-                    Defaults to all 1s (design all positions).
-                - decoding_order_noise: Random numbers for decoding order [B, N].
-                    Positions are decoded in order of (chain_mask + eps) * |noise|.
-                    Defaults to random values generated from the provided key.
-                - bias: Amino acid bias per position [B, N, 21].
-                    Defaults to zeros (no bias).
-                For ligand_mpnn, additionally:
-                - Y, Y_t, Y_m: Ligand features
-            key: PRNG key for sampling.
+            X: Backbone coordinates [B, N, 4, 3] (N, CA, C, O atoms)
+            S: Sequence [B, N] - used for fixed positions (where chain_mask=0)
+            mask: Position mask [B, N] (1.0 = valid, 0.0 = padding)
+            R_idx: Residue indices [B, N]
+            chain_labels: Chain labels [B, N]
+            key: PRNG key for sampling
+            chain_mask: Design mask [B, N] (1.0 = design, 0.0 = fixed).
+                Defaults to all 1s (design all positions).
+            decoding_order_noise: Random numbers for decoding order [B, N].
+                Defaults to random values from key.
+            bias: Amino acid bias per position [B, N, 21].
+                Defaults to zeros (no bias).
+            Y: Ligand atom coordinates [B, N, M, 3] (ligand_mpnn only)
+            Y_t: Ligand atom types [B, N, M] (ligand_mpnn only)
+            Y_m: Ligand atom mask [B, N, M] (ligand_mpnn only)
             temperature: Sampling temperature. Higher = more random.
-            key_augment: Optional PRNG key for coordinate noise (augment_eps).
 
         Returns:
             Dictionary containing:
                 - S: Sampled sequence [B, N]
                 - sampling_probs: Sampling probabilities [B, N, 20]
                 - log_probs: Log probabilities [B, N, 21]
-                - decoding_order: The order in which positions were decoded [B, N]
+                - decoding_order: The order positions were decoded [B, N]
         """
-        S_true = feature_dict["S"]
-        mask = feature_dict["mask"]
-        B, L = S_true.shape
+        S_true = S  # Keep internal name for fixed positions
+        B, L = S.shape
 
         # Default chain_mask: design all positions
-        chain_mask = feature_dict.get("chain_mask", jnp.ones((B, L)))
+        if chain_mask is None:
+            chain_mask = jnp.ones((B, L))
 
-        # Default decoding_order_noise: random values for randomized decoding order
-        # Also support legacy "randn" key for backwards compatibility
-        if "decoding_order_noise" in feature_dict:
-            decoding_order_noise = feature_dict["decoding_order_noise"]
-        elif "randn" in feature_dict:
-            decoding_order_noise = feature_dict["randn"]
-        else:
-            # Generate random values for decoding order using a split of the key
+        # Default decoding_order_noise: random values
+        if decoding_order_noise is None:
             key, order_key = jax.random.split(key)
             decoding_order_noise = jax.random.normal(order_key, (B, L))
 
         # Default bias: no bias
-        bias = feature_dict.get("bias", jnp.zeros((B, L, 21)))
+        if bias is None:
+            bias = jnp.zeros((B, L, 21))
 
         # Encode structure
-        h_V, h_E, E_idx = self.encode(feature_dict, key=key_augment)
+        h_V, h_E, E_idx = self.encode(
+            X=X, mask=mask, R_idx=R_idx, chain_labels=chain_labels,
+            Y=Y, Y_t=Y_t, Y_m=Y_m
+        )
 
         # Update chain_mask to include missing regions
         chain_mask = mask * chain_mask
@@ -452,13 +465,14 @@ class ProteinMPNN(eqx.Module):
             logits = self.W_out(h_V_t_final)  # [B, 21]
             log_probs_t = jnn.log_softmax(logits, axis=-1)  # [B, 21]
 
-            # Sample with temperature and bias
-            probs = jnn.softmax((logits + bias_t) / temperature, axis=-1)  # [B, 21]
-            # Renormalize to exclude X (index 20)
-            probs_sample = probs[:, :20] / jnp.sum(probs[:, :20], axis=-1, keepdims=True)
+            # Sample with temperature and bias (only first 20 AAs, excluding X)
+            logits_biased = (logits[:, :20] + bias_t[:, :20]) / temperature  # [B, 20]
 
-            # Sample from categorical distribution
-            S_t = jax.random.categorical(step_key, jnp.log(probs_sample + 1e-10), axis=-1)  # [B]
+            # Sample from categorical (takes logits, does softmax internally)
+            S_t = jax.random.categorical(step_key, logits_biased, axis=-1)  # [B]
+
+            # Compute sampling probs for output
+            probs_sample = jnn.softmax(logits_biased, axis=-1)  # [B, 20]
 
             # Use true sequence for fixed positions
             S_true_t = S_true[batch_idx, t]  # [B]

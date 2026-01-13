@@ -70,6 +70,19 @@ def create_synthetic_ligand_data(B: int, L: int, M: int = 25, seed: int = 42):
     }
 
 
+def to_jax_kwargs(feature_dict):
+    """Convert PyTorch feature dict to JAX kwargs for encode()."""
+    return {
+        "X": jnp.array(feature_dict["X"].numpy()),
+        "mask": jnp.array(feature_dict["mask"].numpy()),
+        "R_idx": jnp.array(feature_dict["R_idx"].numpy()),
+        "chain_labels": jnp.array(feature_dict["chain_labels"].numpy()),
+        "Y": jnp.array(feature_dict["Y"].numpy()),
+        "Y_t": jnp.array(feature_dict["Y_t"].numpy()),
+        "Y_m": jnp.array(feature_dict["Y_m"].numpy()),
+    }
+
+
 def load_pretrained_ligand_model():
     """Load pretrained LigandMPNN model from checkpoint.
 
@@ -116,11 +129,8 @@ def test_ligand_encode_pretrained():
     with torch.no_grad():
         h_V_torch, h_E_torch, E_idx_torch = torch_model.encode(feature_dict)
 
-    # Convert inputs to JAX
-    feature_dict_jax = {k: jnp.array(v.numpy()) for k, v in feature_dict.items()}
-
     # Run JAX
-    h_V_jax, h_E_jax, E_idx_jax = jax_model.encode(feature_dict_jax)
+    h_V_jax, h_E_jax, E_idx_jax = jax_model.encode(**to_jax_kwargs(feature_dict))
 
     # Compare E_idx (should be identical)
     np.testing.assert_array_equal(
@@ -155,9 +165,8 @@ def test_ligand_encode_pretrained_output_shapes():
 
     B, L, M = 2, 50, 25
     feature_dict = create_synthetic_ligand_data(B, L, M)
-    feature_dict_jax = {k: jnp.array(v.numpy()) for k, v in feature_dict.items()}
 
-    h_V, h_E, E_idx = jax_model.encode(feature_dict_jax)
+    h_V, h_E, E_idx = jax_model.encode(**to_jax_kwargs(feature_dict))
 
     # Check shapes
     assert h_V.shape == (B, L, hidden_dim), f"h_V shape: {h_V.shape}"
@@ -183,8 +192,7 @@ def test_ligand_encode_different_lengths():
         with torch.no_grad():
             h_V_torch, h_E_torch, E_idx_torch = torch_model.encode(feature_dict)
 
-        feature_dict_jax = {k: jnp.array(v.numpy()) for k, v in feature_dict.items()}
-        h_V_jax, h_E_jax, E_idx_jax = jax_model.encode(feature_dict_jax)
+        h_V_jax, h_E_jax, E_idx_jax = jax_model.encode(**to_jax_kwargs(feature_dict))
 
         np.testing.assert_array_equal(
             np.array(E_idx_jax),
@@ -217,8 +225,7 @@ def test_ligand_encode_varying_ligand_atoms():
     with torch.no_grad():
         h_V_torch, h_E_torch, E_idx_torch = torch_model.encode(feature_dict)
 
-    feature_dict_jax = {k: jnp.array(v.numpy()) for k, v in feature_dict.items()}
-    h_V_jax, h_E_jax, E_idx_jax = jax_model.encode(feature_dict_jax)
+    h_V_jax, h_E_jax, E_idx_jax = jax_model.encode(**to_jax_kwargs(feature_dict))
 
     np.testing.assert_allclose(
         np.array(h_V_jax),
@@ -248,8 +255,7 @@ def test_ligand_encode_multi_chain():
     with torch.no_grad():
         h_V_torch, h_E_torch, E_idx_torch = torch_model.encode(feature_dict)
 
-    feature_dict_jax = {k: jnp.array(v.numpy()) for k, v in feature_dict.items()}
-    h_V_jax, h_E_jax, E_idx_jax = jax_model.encode(feature_dict_jax)
+    h_V_jax, h_E_jax, E_idx_jax = jax_model.encode(**to_jax_kwargs(feature_dict))
 
     np.testing.assert_array_equal(
         np.array(E_idx_jax),
@@ -280,10 +286,10 @@ def test_ligand_encode_pretrained_jit():
     with torch.no_grad():
         h_V_torch, h_E_torch, E_idx_torch = torch_model.encode(feature_dict)
 
-    feature_dict_jax = {k: jnp.array(v.numpy()) for k, v in feature_dict.items()}
+    jax_kwargs = to_jax_kwargs(feature_dict)
 
     # First call triggers compilation
-    h_V_jax, h_E_jax, E_idx_jax = encode_jit(feature_dict_jax)
+    h_V_jax, h_E_jax, E_idx_jax = encode_jit(**jax_kwargs)
 
     # Verify JIT results match PyTorch
     np.testing.assert_array_equal(
@@ -307,7 +313,7 @@ def test_ligand_encode_pretrained_jit():
     )
 
     # Second call uses cached compilation - should give same results
-    h_V_jax2, h_E_jax2, E_idx_jax2 = encode_jit(feature_dict_jax)
+    h_V_jax2, h_E_jax2, E_idx_jax2 = encode_jit(**jax_kwargs)
 
     np.testing.assert_array_equal(
         np.array(E_idx_jax),

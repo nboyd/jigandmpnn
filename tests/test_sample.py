@@ -21,40 +21,16 @@ LIGANDMPNN_CHECKPOINT_PATH = get_weight_path("ligand_mpnn")
 
 
 def create_sample_feature_dict(B: int, L: int, seed: int = 42):
-    """Create synthetic protein data for sampling.
-
-    Args:
-        B: Batch size
-        L: Sequence length
-        seed: Random seed
-
-    Returns:
-        Dictionary with protein features for sampling
-    """
+    """Create synthetic protein data for sampling."""
     torch.manual_seed(seed)
 
-    # Generate random backbone coordinates
     X = torch.randn(B, L, 4, 3) * 3.0
-
-    # Random sequence (0-20)
     S = torch.randint(0, 21, (B, L))
-
-    # Create mask (all valid)
     mask = torch.ones(B, L)
-
-    # Residue indices (sequential)
     R_idx = torch.arange(L).unsqueeze(0).expand(B, -1)
-
-    # Chain labels (single chain)
     chain_labels = torch.zeros(B, L, dtype=torch.long)
-
-    # Chain mask (all positions to be designed)
     chain_mask = torch.ones(B, L)
-
-    # Random numbers for decoding order
     randn = torch.randn(B, L)
-
-    # Amino acid bias (no bias)
     bias = torch.zeros(B, L, 21)
 
     return {
@@ -76,7 +52,6 @@ def create_sample_feature_dict(B: int, L: int, seed: int = 42):
 def create_sample_feature_dict_ligand(B: int, L: int, M: int = 25, seed: int = 42):
     """Create synthetic protein + ligand data for sampling."""
     feature_dict = create_sample_feature_dict(B, L, seed)
-
     torch.manual_seed(seed + 1000)
 
     X = feature_dict["X"]
@@ -85,13 +60,29 @@ def create_sample_feature_dict_ligand(B: int, L: int, M: int = 25, seed: int = 4
     Y_m = torch.zeros(B, L, M)
     Y_m[:, :, :10] = 1.0
 
-    feature_dict.update({
-        "Y": Y,
-        "Y_t": Y_t,
-        "Y_m": Y_m,
-    })
-
+    feature_dict.update({"Y": Y, "Y_t": Y_t, "Y_m": Y_m})
     return feature_dict
+
+
+def to_jax_sample_kwargs(feature_dict, include_ligand=False):
+    """Convert PyTorch feature dict to JAX kwargs for sample()."""
+    kwargs = {
+        "X": jnp.array(feature_dict["X"].numpy()),
+        "S": jnp.array(feature_dict["S"].numpy()),
+        "mask": jnp.array(feature_dict["mask"].numpy()),
+        "R_idx": jnp.array(feature_dict["R_idx"].numpy()),
+        "chain_labels": jnp.array(feature_dict["chain_labels"].numpy()),
+        "chain_mask": jnp.array(feature_dict["chain_mask"].numpy()),
+        "decoding_order_noise": jnp.array(feature_dict["randn"].numpy()),
+        "bias": jnp.array(feature_dict["bias"].numpy()),
+    }
+    if include_ligand and "Y" in feature_dict:
+        kwargs.update({
+            "Y": jnp.array(feature_dict["Y"].numpy()),
+            "Y_t": jnp.array(feature_dict["Y_t"].numpy()),
+            "Y_m": jnp.array(feature_dict["Y_m"].numpy()),
+        })
+    return kwargs
 
 
 def load_pretrained_proteinmpnn():
@@ -153,23 +144,14 @@ def test_sample_proteinmpnn_output_shapes():
     B, L = 2, 50
     feature_dict = create_sample_feature_dict(B, L)
 
-    feature_dict_jax = {}
-    for k, v in feature_dict.items():
-        if isinstance(v, torch.Tensor):
-            feature_dict_jax[k] = jnp.array(v.numpy())
-        else:
-            feature_dict_jax[k] = v
-
     key = jax.random.PRNGKey(42)
-    result = jax_model.sample(feature_dict_jax, key=key)
+    result = jax_model.sample(**to_jax_sample_kwargs(feature_dict), key=key)
 
-    # Check shapes
     assert result["S"].shape == (B, L), f"S shape: {result['S'].shape}"
     assert result["sampling_probs"].shape == (B, L, 20), f"sampling_probs shape: {result['sampling_probs'].shape}"
     assert result["log_probs"].shape == (B, L, 21), f"log_probs shape: {result['log_probs'].shape}"
     assert result["decoding_order"].shape == (B, L), f"decoding_order shape: {result['decoding_order'].shape}"
 
-    # Check types
     assert result["S"].dtype == jnp.int32
     assert result["sampling_probs"].dtype == jnp.float32
     assert result["log_probs"].dtype == jnp.float32
@@ -182,19 +164,12 @@ def test_sample_proteinmpnn_deterministic():
 
     B, L = 2, 50
     feature_dict = create_sample_feature_dict(B, L)
-
-    feature_dict_jax = {}
-    for k, v in feature_dict.items():
-        if isinstance(v, torch.Tensor):
-            feature_dict_jax[k] = jnp.array(v.numpy())
-        else:
-            feature_dict_jax[k] = v
+    jax_kwargs = to_jax_sample_kwargs(feature_dict)
 
     key = jax.random.PRNGKey(42)
 
-    # Same key should produce same results
-    result1 = jax_model.sample(feature_dict_jax, key=key)
-    result2 = jax_model.sample(feature_dict_jax, key=key)
+    result1 = jax_model.sample(**jax_kwargs, key=key)
+    result2 = jax_model.sample(**jax_kwargs, key=key)
 
     np.testing.assert_array_equal(
         np.array(result1["S"]),
@@ -217,22 +192,15 @@ def test_sample_proteinmpnn_different_keys():
 
     B, L = 2, 50
     feature_dict = create_sample_feature_dict(B, L)
-
-    feature_dict_jax = {}
-    for k, v in feature_dict.items():
-        if isinstance(v, torch.Tensor):
-            feature_dict_jax[k] = jnp.array(v.numpy())
-        else:
-            feature_dict_jax[k] = v
+    jax_kwargs = to_jax_sample_kwargs(feature_dict)
 
     key1 = jax.random.PRNGKey(42)
     key2 = jax.random.PRNGKey(123)
 
-    result1 = jax_model.sample(feature_dict_jax, key=key1)
-    result2 = jax_model.sample(feature_dict_jax, key=key2)
+    result1 = jax_model.sample(**jax_kwargs, key=key1)
+    result2 = jax_model.sample(**jax_kwargs, key=key2)
 
-    # Different keys should (very likely) produce different sequences
-    # Note: decoding_order should be the same since it's determined by randn
+    # Decoding order should be the same since it's determined by randn
     np.testing.assert_array_equal(
         np.array(result1["decoding_order"]),
         np.array(result2["decoding_order"]),
@@ -256,24 +224,16 @@ def test_sample_proteinmpnn_fixed_positions():
 
     # Fix some positions
     chain_mask = torch.ones(B, L)
-    chain_mask[:, :10] = 0.0  # First 10 positions fixed
-    chain_mask[:, 40:] = 0.0  # Last 10 positions fixed
+    chain_mask[:, :10] = 0.0
+    chain_mask[:, 40:] = 0.0
     feature_dict["chain_mask"] = chain_mask
 
-    feature_dict_jax = {}
-    for k, v in feature_dict.items():
-        if isinstance(v, torch.Tensor):
-            feature_dict_jax[k] = jnp.array(v.numpy())
-        else:
-            feature_dict_jax[k] = v
-
     key = jax.random.PRNGKey(42)
-    result = jax_model.sample(feature_dict_jax, key=key)
+    result = jax_model.sample(**to_jax_sample_kwargs(feature_dict), key=key)
 
     S_true = feature_dict["S"].numpy()
     S_sampled = np.array(result["S"])
 
-    # Fixed positions should match true sequence
     np.testing.assert_array_equal(
         S_sampled[:, :10],
         S_true[:, :10],
@@ -295,17 +255,9 @@ def test_sample_proteinmpnn_probs_sum_to_one():
     B, L = 2, 50
     feature_dict = create_sample_feature_dict(B, L)
 
-    feature_dict_jax = {}
-    for k, v in feature_dict.items():
-        if isinstance(v, torch.Tensor):
-            feature_dict_jax[k] = jnp.array(v.numpy())
-        else:
-            feature_dict_jax[k] = v
-
     key = jax.random.PRNGKey(42)
-    result = jax_model.sample(feature_dict_jax, key=key)
+    result = jax_model.sample(**to_jax_sample_kwargs(feature_dict), key=key)
 
-    # Sampling probs should sum to ~1 for each position (excluding X)
     prob_sums = np.sum(np.array(result["sampling_probs"]), axis=-1)
     np.testing.assert_allclose(
         prob_sums,
@@ -323,15 +275,8 @@ def test_sample_proteinmpnn_valid_amino_acids():
     B, L = 2, 50
     feature_dict = create_sample_feature_dict(B, L)
 
-    feature_dict_jax = {}
-    for k, v in feature_dict.items():
-        if isinstance(v, torch.Tensor):
-            feature_dict_jax[k] = jnp.array(v.numpy())
-        else:
-            feature_dict_jax[k] = v
-
     key = jax.random.PRNGKey(42)
-    result = jax_model.sample(feature_dict_jax, key=key)
+    result = jax_model.sample(**to_jax_sample_kwargs(feature_dict), key=key)
 
     S = np.array(result["S"])
     assert np.all(S >= 0), "Amino acids should be >= 0"
@@ -345,22 +290,12 @@ def test_sample_proteinmpnn_temperature():
 
     B, L = 2, 30
     feature_dict = create_sample_feature_dict(B, L)
+    jax_kwargs = to_jax_sample_kwargs(feature_dict)
 
-    feature_dict_jax = {}
-    for k, v in feature_dict.items():
-        if isinstance(v, torch.Tensor):
-            feature_dict_jax[k] = jnp.array(v.numpy())
-        else:
-            feature_dict_jax[k] = v
-
-    # Low temperature should produce more confident predictions
     key = jax.random.PRNGKey(42)
-    result_low_temp = jax_model.sample(feature_dict_jax, key=key, temperature=0.1)
+    result_low_temp = jax_model.sample(**jax_kwargs, key=key, temperature=0.1)
+    result_high_temp = jax_model.sample(**jax_kwargs, key=key, temperature=2.0)
 
-    # High temperature should produce less confident predictions
-    result_high_temp = jax_model.sample(feature_dict_jax, key=key, temperature=2.0)
-
-    # Max probability should be higher for low temperature
     max_prob_low = np.max(np.array(result_low_temp["sampling_probs"]), axis=-1)
     max_prob_high = np.max(np.array(result_high_temp["sampling_probs"]), axis=-1)
 
@@ -373,26 +308,15 @@ def test_sample_proteinmpnn_decoding_order_matches_torch():
     torch_model = load_pretrained_proteinmpnn()
     jax_model = from_torch(torch_model)
 
-    # Use B=1 for PyTorch comparison since PyTorch's batch_size parameter
-    # is for generating multiple samples from a single structure
     B, L = 1, 50
     feature_dict = create_sample_feature_dict(B, L)
 
-    # Run PyTorch to get decoding order
     with torch.no_grad():
         torch_result = torch_model.sample(feature_dict)
 
-    feature_dict_jax = {}
-    for k, v in feature_dict.items():
-        if isinstance(v, torch.Tensor):
-            feature_dict_jax[k] = jnp.array(v.numpy())
-        else:
-            feature_dict_jax[k] = v
-
     key = jax.random.PRNGKey(42)
-    jax_result = jax_model.sample(feature_dict_jax, key=key)
+    jax_result = jax_model.sample(**to_jax_sample_kwargs(feature_dict), key=key)
 
-    # Decoding order should match (it's deterministic based on randn)
     np.testing.assert_array_equal(
         np.array(jax_result["decoding_order"]),
         torch_result["decoding_order"].numpy(),
@@ -408,17 +332,9 @@ def test_sample_ligandmpnn_output_shapes():
     B, L, M = 2, 50, 25
     feature_dict = create_sample_feature_dict_ligand(B, L, M)
 
-    feature_dict_jax = {}
-    for k, v in feature_dict.items():
-        if isinstance(v, torch.Tensor):
-            feature_dict_jax[k] = jnp.array(v.numpy())
-        else:
-            feature_dict_jax[k] = v
-
     key = jax.random.PRNGKey(42)
-    result = jax_model.sample(feature_dict_jax, key=key)
+    result = jax_model.sample(**to_jax_sample_kwargs(feature_dict, include_ligand=True), key=key)
 
-    # Check shapes
     assert result["S"].shape == (B, L), f"S shape: {result['S'].shape}"
     assert result["sampling_probs"].shape == (B, L, 20)
     assert result["log_probs"].shape == (B, L, 21)
@@ -430,28 +346,17 @@ def test_sample_proteinmpnn_jit():
     torch_model = load_pretrained_proteinmpnn()
     jax_model = from_torch(torch_model)
 
-    # JIT compile the sample method
     sample_jit = eqx.filter_jit(jax_model.sample)
 
     B, L = 2, 50
     feature_dict = create_sample_feature_dict(B, L)
-
-    feature_dict_jax = {}
-    for k, v in feature_dict.items():
-        if isinstance(v, torch.Tensor):
-            feature_dict_jax[k] = jnp.array(v.numpy())
-        else:
-            feature_dict_jax[k] = v
+    jax_kwargs = to_jax_sample_kwargs(feature_dict)
 
     key = jax.random.PRNGKey(42)
 
-    # First call triggers compilation
-    result1 = sample_jit(feature_dict_jax, key=key)
+    result1 = sample_jit(**jax_kwargs, key=key)
+    result2 = sample_jit(**jax_kwargs, key=key)
 
-    # Second call uses cached compilation
-    result2 = sample_jit(feature_dict_jax, key=key)
-
-    # Results should be identical
     np.testing.assert_array_equal(
         np.array(result1["S"]),
         np.array(result2["S"]),
