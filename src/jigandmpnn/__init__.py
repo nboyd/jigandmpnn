@@ -4,8 +4,13 @@ from pathlib import Path
 from typing import Literal, TYPE_CHECKING
 
 from jigandmpnn.backend import from_torch, register_from_torch
-from jigandmpnn.losses import AutoregressiveSequenceRecovery
 from jigandmpnn.modules.model import SampleResult, ScoreResult
+
+# AutoregressiveSequenceRecovery requires mosaic, which is an optional dependency
+try:
+    from jigandmpnn.losses import AutoregressiveSequenceRecovery
+except ImportError:
+    AutoregressiveSequenceRecovery = None  # type: ignore[misc, assignment]
 
 if TYPE_CHECKING:
     from jigandmpnn.modules.model import ProteinMPNN
@@ -167,9 +172,12 @@ __all__ = [
     "load_soluble_mpnn",
     "load_mpnn",
     "load_mpnn_sol",
-    "AutoregressiveSequenceRecovery",
     "SampleResult",
     "ScoreResult",
     "WEIGHTS_DIR",
     "WEIGHT_FILES",
 ]
+
+# Only export AutoregressiveSequenceRecovery if mosaic is available
+if AutoregressiveSequenceRecovery is not None:
+    __all__.append("AutoregressiveSequenceRecovery")
