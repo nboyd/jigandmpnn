@@ -68,8 +68,8 @@ def to_jax_score_kwargs(feature_dict, include_ligand=False):
         "X": jnp.array(feature_dict["X"].numpy()),
         "S": jnp.array(feature_dict["S"].numpy()),
         "mask": jnp.array(feature_dict["mask"].numpy()),
-        "R_idx": jnp.array(feature_dict["R_idx"].numpy()),
-        "chain_labels": jnp.array(feature_dict["chain_labels"].numpy()),
+        "residue_idx": jnp.array(feature_dict["R_idx"].numpy()),
+        "chain_encoding_all": jnp.array(feature_dict["chain_labels"].numpy()),
         "chain_mask": jnp.array(feature_dict["chain_mask"].numpy()),
         "decoding_order_noise": jnp.array(feature_dict["randn"].numpy()),
     }

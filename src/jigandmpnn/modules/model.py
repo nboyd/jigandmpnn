@@ -90,10 +90,10 @@ class ProteinMPNN(eqx.Module):
     def encode(
         self,
         *,
-        X: Float[Array, "B N 4 3"],
-        mask: Float[Array, "B N"],
-        R_idx: Int[Array, "B N"],
-        chain_labels: Int[Array, "B N"],
+        X: Float[Array, "B N 4 3"] | Float[Array, "N 4 3"],
+        mask: Float[Array, "B N"] | Float[Array, "N"],
+        residue_idx: Int[Array, "B N"] | Int[Array, "N"],
+        chain_encoding_all: Int[Array, "B N"] | Int[Array, "N"],
         Y: Float[Array, "B N M 3"] | None = None,
         Y_t: Int[Array, "B N M"] | None = None,
         Y_m: Float[Array, "B N M"] | None = None,
@@ -106,10 +106,12 @@ class ProteinMPNN(eqx.Module):
         """Encode protein structure into node and edge embeddings.
 
         Args:
-            X: Backbone coordinates [B, N, 4, 3] (N, CA, C, O atoms)
-            mask: Position mask [B, N] (1.0 = valid, 0.0 = padding)
-            R_idx: Residue indices [B, N]
-            chain_labels: Chain labels [B, N]
+            X: Backbone coordinates (N, CA, C, O atoms).
+                Accepts unbatched [N, 4, 3] or batched [B, N, 4, 3].
+            mask: Position mask (1.0 = valid, 0.0 = padding).
+                Accepts unbatched [N] or batched [B, N].
+            residue_idx: Residue indices. Accepts unbatched [N] or batched [B, N].
+            chain_encoding_all: Chain labels. Accepts unbatched [N] or batched [B, N].
             Y: Ligand atom coordinates [B, N, M, 3] (ligand_mpnn only)
             Y_t: Ligand atom types [B, N, M] (ligand_mpnn only)
             Y_m: Ligand atom mask [B, N, M] (ligand_mpnn only)
@@ -120,14 +122,22 @@ class ProteinMPNN(eqx.Module):
             h_E: Edge embeddings [B, N, K, hidden_dim]
             E_idx: Neighbor indices [B, N, K]
         """
+        # Add batch dim if unbatched
+        if X.ndim == 3:  # (N, 4, 3) → (1, N, 4, 3)
+            X, mask, residue_idx, chain_encoding_all = jax.tree.map(
+                lambda x: x[None], (X, mask, residue_idx, chain_encoding_all)
+            )
+            if Y is not None:
+                Y, Y_t, Y_m = jax.tree.map(lambda x: x[None], (Y, Y_t, Y_m))
+
         B, L = mask.shape
 
         # Build feature dict for internal use (features module still uses dict)
         feature_dict = {
             "X": X,
             "mask": mask,
-            "R_idx": R_idx,
-            "chain_labels": chain_labels,
+            "R_idx": residue_idx,
+            "chain_labels": chain_encoding_all,
         }
         if Y is not None:
             feature_dict["Y"] = Y
@@ -211,8 +221,8 @@ class ProteinMPNN(eqx.Module):
         X: Float[Array, "B N 4 3"],
         S: Int[Array, "B N"],
         mask: Float[Array, "B N"],
-        R_idx: Int[Array, "B N"],
-        chain_labels: Int[Array, "B N"],
+        residue_idx: Int[Array, "B N"],
+        chain_encoding_all: Int[Array, "B N"],
         key: PRNGKeyArray,
         chain_mask: Float[Array, "B N"] | None = None,
         decoding_order_noise: Float[Array, "B N"] | None = None,
@@ -227,8 +237,8 @@ class ProteinMPNN(eqx.Module):
             X: Backbone coordinates [B, N, 4, 3] (N, CA, C, O atoms)
             S: Sequence (integer encoded) [B, N]
             mask: Position mask [B, N] (1.0 = valid, 0.0 = padding)
-            R_idx: Residue indices [B, N]
-            chain_labels: Chain labels [B, N]
+            residue_idx: Residue indices [B, N]
+            chain_encoding_all: Chain labels [B, N]
             key: PRNG key for random decoding order
             chain_mask: Design mask [B, N] (1.0 = design, 0.0 = fixed).
                 Defaults to all 1s (design all positions).
@@ -254,7 +264,8 @@ class ProteinMPNN(eqx.Module):
 
         # Encode structure
         h_V, h_E, E_idx = self.encode(
-            X=X, mask=mask, R_idx=R_idx, chain_labels=chain_labels,
+            X=X, mask=mask, residue_idx=residue_idx,
+            chain_encoding_all=chain_encoding_all,
             Y=Y, Y_t=Y_t, Y_m=Y_m,
         )
 
@@ -332,8 +343,8 @@ class ProteinMPNN(eqx.Module):
         X: Float[Array, "B N 4 3"],
         S: Int[Array, "B N"],
         mask: Float[Array, "B N"],
-        R_idx: Int[Array, "B N"],
-        chain_labels: Int[Array, "B N"],
+        residue_idx: Int[Array, "B N"],
+        chain_encoding_all: Int[Array, "B N"],
         key: PRNGKeyArray,
         chain_mask: Float[Array, "B N"] | None = None,
         decoding_order_noise: Float[Array, "B N"] | None = None,
@@ -349,8 +360,8 @@ class ProteinMPNN(eqx.Module):
             X: Backbone coordinates [B, N, 4, 3] (N, CA, C, O atoms)
             S: Sequence [B, N] - used for fixed positions (where chain_mask=0)
             mask: Position mask [B, N] (1.0 = valid, 0.0 = padding)
-            R_idx: Residue indices [B, N]
-            chain_labels: Chain labels [B, N]
+            residue_idx: Residue indices [B, N]
+            chain_encoding_all: Chain labels [B, N]
             key: PRNG key for sampling
             chain_mask: Design mask [B, N] (1.0 = design, 0.0 = fixed).
                 Defaults to all 1s (design all positions).
@@ -384,8 +395,9 @@ class ProteinMPNN(eqx.Module):
 
         # Encode structure
         h_V, h_E, E_idx = self.encode(
-            X=X, mask=mask, R_idx=R_idx, chain_labels=chain_labels,
-            Y=Y, Y_t=Y_t, Y_m=Y_m
+            X=X, mask=mask, residue_idx=residue_idx,
+            chain_encoding_all=chain_encoding_all,
+            Y=Y, Y_t=Y_t, Y_m=Y_m,
         )
 
         # Update chain_mask to include missing regions
@@ -532,6 +544,156 @@ class ProteinMPNN(eqx.Module):
             log_probs=all_log_probs_final,
             decoding_order=decoding_order,
         )
+
+    def decode(
+        self,
+        *,
+        S: Float[Array, "B N 21"] | Float[Array, "N 21"],
+        h_V: Float[Array, "B N hidden_dim"],
+        h_E: Float[Array, "B N K hidden_dim"],
+        E_idx: Int[Array, "B N K"],
+        mask: Float[Array, "B N"] | Float[Array, "N"],
+        decoding_order: Float[Array, "B N"] | Float[Array, "N"],
+    ) -> Float[Array, "B N 21"]:
+        """Decode with teacher forcing given encoded state and one-hot sequence.
+
+        This method provides mosaic-compatible decode interface. It takes
+        one-hot encoded sequences and pre-computed encoder outputs.
+
+        Args:
+            S: One-hot encoded sequence. Accepts unbatched [N, 21] or batched [B, N, 21].
+            h_V: Node embeddings from encode() [B, N, hidden_dim].
+            h_E: Edge embeddings from encode() [B, N, K, hidden_dim].
+            E_idx: Neighbor indices from encode() [B, N, K].
+            mask: Position mask (1.0 = valid, 0.0 = padding).
+                Accepts unbatched [N] or batched [B, N].
+            decoding_order: Float noise values [N] or [B, N] — argsorted internally
+                to determine decoding order.
+
+        Returns:
+            log_probs: Log probabilities [B, N, 21].
+        """
+        # Add batch dim if unbatched
+        if S.ndim == 2:  # (N, 21) → (1, N, 21)
+            S = S[None]
+        if mask.ndim == 1:  # (N,) → (1, N)
+            mask = mask[None]
+        if decoding_order.ndim == 1:  # (N,) → (1, N)
+            decoding_order = decoding_order[None]
+
+        B, L = mask.shape
+
+        # Convert decoding_order noise to actual order via argsort
+        order = jnp.argsort(decoding_order, axis=-1)
+
+        # Compute h_S from one-hot S via matmul with embedding weight
+        h_S = S @ self.W_s.weight  # [B, N, hidden_dim]
+
+        # Build permutation matrix for decoding order
+        permutation_matrix_reverse = jnn.one_hot(order, num_classes=L)
+
+        # Build backward mask
+        lower_tri = 1.0 - jnp.triu(jnp.ones((L, L)))
+        order_mask_backward = jnp.einsum(
+            "ij, biq, bjp->bqp",
+            lower_tri,
+            permutation_matrix_reverse,
+            permutation_matrix_reverse,
+        )
+
+        # Gather the backward mask for each neighbor
+        mask_attend = jnp.take_along_axis(
+            order_mask_backward,
+            E_idx,
+            axis=2,
+        )[..., None]
+
+        mask_1D = mask[:, :, None, None]
+        mask_bw = mask_1D * mask_attend
+        mask_fw = mask_1D * (1.0 - mask_attend)
+
+        # Build context from sequence and edges
+        h_ES = cat_neighbors_nodes(h_S, h_E, E_idx)
+
+        # Build encoder-only context (no sequence information)
+        h_EX_encoder = cat_neighbors_nodes(jnp.zeros_like(h_S), h_E, E_idx)
+        h_EXV_encoder = cat_neighbors_nodes(h_V, h_EX_encoder, E_idx)
+
+        # Forward mask: positions that have NOT been decoded yet
+        h_EXV_encoder_fw = mask_fw * h_EXV_encoder
+
+        # Teacher forcing: use provided sequence during decoding
+        for layer in self.decoder_layers:
+            h_ESV = cat_neighbors_nodes(h_V, h_ES, E_idx)
+            h_ESV = mask_bw * h_ESV + h_EXV_encoder_fw
+            h_V = layer(h_V, h_ESV, mask)
+
+        # Compute log probabilities
+        logits = self.W_out(h_V)
+        log_probs = jnn.log_softmax(logits, axis=-1)
+
+        return log_probs
+
+    def __call__(
+        self,
+        X: Float[Array, "B N 4 3"] | Float[Array, "N 4 3"],
+        S: Float[Array, "B N 21"] | Float[Array, "N 21"],
+        mask: Float[Array, "B N"] | Float[Array, "N"],
+        residue_idx: Int[Array, "B N"] | Int[Array, "N"],
+        chain_encoding_all: Int[Array, "B N"] | Int[Array, "N"],
+        decoding_order: Float[Array, "B N"] | Float[Array, "N"],
+        *,
+        key: PRNGKeyArray | None = None,
+    ) -> Float[Array, "B N 21"]:
+        """Encode structure and decode sequence in one call.
+
+        Convenience method matching mosaic's ``ProteinMPNN.__call__`` signature.
+
+        Args:
+            X: Backbone coordinates (N, CA, C, O atoms).
+            S: One-hot encoded sequence.
+            mask: Position mask (1.0 = valid, 0.0 = padding).
+            residue_idx: Residue indices.
+            chain_encoding_all: Chain labels.
+            decoding_order: Float noise for decoding order (argsorted internally).
+            key: Optional PRNG key for coordinate noise.
+
+        Returns:
+            log_probs: Log probabilities [B, N, 21].
+        """
+        h_V, h_E, E_idx = self.encode(
+            X=X, mask=mask, residue_idx=residue_idx,
+            chain_encoding_all=chain_encoding_all, key=key,
+        )
+        return self.decode(
+            S=S, h_V=h_V, h_E=h_E, E_idx=E_idx,
+            decoding_order=decoding_order, mask=mask,
+        )
+
+    @staticmethod
+    def from_pretrained(checkpoint_path=None, backbone_noise=0.0):
+        """Load a pretrained ProteinMPNN model.
+
+        Args:
+            checkpoint_path: Path to checkpoint file. If None, loads default
+                ProteinMPNN weights (proteinmpnn_v_48_020).
+            backbone_noise: Not used (accepted for mosaic API compatibility).
+
+        Returns:
+            ProteinMPNN model with pretrained weights.
+        """
+        from jigandmpnn import _load_model, get_weight_path, _get_model_type, WEIGHTS_DIR
+
+        if checkpoint_path is None:
+            return _load_model(
+                WEIGHTS_DIR / "proteinmpnn_v_48_020.pt", "protein_mpnn"
+            )
+
+        from pathlib import Path
+        checkpoint_path = Path(checkpoint_path)
+        # Infer model type from filename
+        model_type = _get_model_type(checkpoint_path.stem)
+        return _load_model(checkpoint_path, model_type)
 
     @staticmethod
     def from_torch(m: TorchProteinMPNN) -> "ProteinMPNN":

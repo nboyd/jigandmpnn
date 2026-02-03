@@ -3,7 +3,6 @@
 
 import time
 from pathlib import Path
-from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -11,50 +10,11 @@ import numpy as np
 import torch
 import equinox as eqx
 
-from jigandmpnn import get_weight_path
-from jigandmpnn.backend import from_torch
-from jigandmpnn.modules.model import ProteinMPNN
+from jigandmpnn import load_protein_mpnn
 from jigandmpnn.vendor.ligandmpnn import (
-    ProteinMPNN as TorchProteinMPNN,
     parse_PDB,
     featurize,
 )
-
-
-def load_jax_model(model_type: str = "protein_mpnn"):
-    """Load a pretrained model and convert to JAX."""
-    checkpoint_path = get_weight_path(model_type)
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    k_neighbors = checkpoint["num_edges"]
-    atom_context_num = checkpoint.get("atom_context_num", 1)
-
-    torch_model = TorchProteinMPNN(
-        node_features=128,
-        edge_features=128,
-        hidden_dim=128,
-        num_encoder_layers=3,
-        num_decoder_layers=3,
-        k_neighbors=k_neighbors,
-        device="cpu",
-        atom_context_num=atom_context_num,
-        model_type=model_type,
-        ligand_mpnn_use_side_chain_context=0,
-    )
-    torch_model.load_state_dict(checkpoint["model_state_dict"])
-    torch_model.eval()
-
-    return from_torch(torch_model)
-
-
-def torch_dict_to_jax(feature_dict: dict) -> dict:
-    """Convert feature dictionary from PyTorch to JAX."""
-    jax_dict = {}
-    for k, v in feature_dict.items():
-        if isinstance(v, torch.Tensor):
-            jax_dict[k] = jnp.array(v.numpy())
-        else:
-            jax_dict[k] = v
-    return jax_dict
 
 
 def benchmark_sampling(num_samples: int = 512, num_warmup: int = 3, num_runs: int = 5):
@@ -65,8 +25,8 @@ def benchmark_sampling(num_samples: int = 512, num_warmup: int = 3, num_runs: in
         print(f"GPU: {jax.devices()[0]}")
 
     # Load model
-    print("\nLoading model and converting to JAX...")
-    model = load_jax_model()
+    print("\nLoading JAX model...")
+    model = load_protein_mpnn()
 
     # Parse PDB
     pdb_path = Path(__file__).parent.parent / "3DI3.pdb"
@@ -87,23 +47,28 @@ def benchmark_sampling(num_samples: int = 512, num_warmup: int = 3, num_runs: in
     )
 
     B, L_feat = feature_dict["mask"].shape
-    feature_dict["bias"] = torch.zeros(B, L_feat, 21)
-    feature_dict["randn"] = torch.randn(B, L_feat)
 
-    # Convert to JAX
-    feature_dict_jax = torch_dict_to_jax(feature_dict)
+    # Convert to JAX arrays
+    X = jnp.array(feature_dict["X"].numpy())
+    S = jnp.array(feature_dict["S"].numpy())
+    mask = jnp.array(feature_dict["mask"].numpy())
+    residue_idx = jnp.array(feature_dict["R_idx"].numpy())
+    chain_encoding_all = jnp.array(feature_dict["chain_labels"].numpy())
 
     print(f"\nBenchmarking {num_samples} samples...")
     print(f"Warmup runs: {num_warmup}")
     print(f"Timed runs: {num_runs}")
 
     # Create vmapped sample function
-    # vmap over different random keys
     @eqx.filter_jit
-    def sample_batch(model, feature_dict, keys):
+    def sample_batch(model, X, S, mask, residue_idx, chain_encoding_all, keys):
         """Sample a batch of sequences using vmap over keys."""
         def sample_single(key):
-            return model.sample(feature_dict, key=key, temperature=0.1)
+            return model.sample(
+                X=X, S=S, mask=mask,
+                residue_idx=residue_idx, chain_encoding_all=chain_encoding_all,
+                key=key, temperature=0.1,
+            )
         return jax.vmap(sample_single)(keys)
 
     # Also test sequential JIT version for comparison
@@ -117,8 +82,8 @@ def benchmark_sampling(num_samples: int = 512, num_warmup: int = 3, num_runs: in
     for i in range(num_warmup):
         master_key, *sample_keys = jax.random.split(master_key, num_samples + 1)
         keys = jnp.stack(sample_keys)
-        result = sample_batch(model, feature_dict_jax, keys)
-        jax.block_until_ready(result["S"])
+        result = sample_batch(model, X, S, mask, residue_idx, chain_encoding_all, keys)
+        jax.block_until_ready(result.S)
         print(f"  Warmup {i+1}/{num_warmup}")
 
     # Timed runs (vmap)
@@ -129,8 +94,8 @@ def benchmark_sampling(num_samples: int = 512, num_warmup: int = 3, num_runs: in
         keys = jnp.stack(sample_keys)
 
         start = time.perf_counter()
-        result = sample_batch(model, feature_dict_jax, keys)
-        jax.block_until_ready(result["S"])
+        result = sample_batch(model, X, S, mask, residue_idx, chain_encoding_all, keys)
+        jax.block_until_ready(result.S)
         elapsed = time.perf_counter() - start
 
         times_vmap.append(elapsed)
@@ -144,10 +109,12 @@ def benchmark_sampling(num_samples: int = 512, num_warmup: int = 3, num_runs: in
         start = time.perf_counter()
         for j in range(seq_samples):
             master_key, sample_key = jax.random.split(master_key)
-            master_key, randn_key = jax.random.split(master_key)
-            feature_dict_jax["randn"] = jax.random.normal(randn_key, (B, L_feat))
-            result = sample_jit(feature_dict_jax, key=sample_key, temperature=0.1)
-            jax.block_until_ready(result["S"])
+            result = sample_jit(
+                X=X, S=S, mask=mask,
+                residue_idx=residue_idx, chain_encoding_all=chain_encoding_all,
+                key=sample_key, temperature=0.1,
+            )
+            jax.block_until_ready(result.S)
         elapsed = time.perf_counter() - start
 
         times_seq.append(elapsed)

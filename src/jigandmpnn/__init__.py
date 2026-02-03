@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Literal, TYPE_CHECKING
 
 from jigandmpnn.backend import from_torch, register_from_torch
+from jigandmpnn.losses import AutoregressiveSequenceRecovery
 from jigandmpnn.modules.model import SampleResult, ScoreResult
 
 if TYPE_CHECKING:
@@ -153,6 +154,10 @@ def load_soluble_mpnn() -> "ProteinMPNN":
     return _load_model(WEIGHTS_DIR / "solublempnn_v_48_020.pt", "soluble_mpnn")
 
 
+# Convenience aliases matching mosaic naming
+load_mpnn = load_protein_mpnn
+load_mpnn_sol = load_soluble_mpnn
+
 __all__ = [
     "from_torch",
     "register_from_torch",
@@ -160,6 +165,9 @@ __all__ = [
     "list_weights",
     "load_protein_mpnn",
     "load_soluble_mpnn",
+    "load_mpnn",
+    "load_mpnn_sol",
+    "AutoregressiveSequenceRecovery",
     "SampleResult",
     "ScoreResult",
     "WEIGHTS_DIR",

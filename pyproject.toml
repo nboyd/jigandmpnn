@@ -3,7 +3,7 @@ name = "jigandmpnn"
 version = "0.1.0"
 description = "JAX/Equinox translation of LigandMPNN"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = "==3.12.*"
 license = "MIT"
 dependencies = [
     "jax[cpu,cuda12]",
@@ -40,3 +40,16 @@ include = [
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+
+[tool.uv.sources]
+mosaic = { git = "https://github.com/escalante-bio/mosaic.git" }
+
+[tool.uv]
+environments = ["sys_platform == 'linux'"]
+override-dependencies = ["scipy>=1.15.3", "numpy>=2.0,<2.2"]
+
+[dependency-groups]
+test = [
+    "mosaic",
+    "pytest",
+]

@@ -60,8 +60,8 @@ def to_jax_kwargs(feature_dict):
     return {
         "X": jnp.array(feature_dict["X"].numpy()),
         "mask": jnp.array(feature_dict["mask"].numpy()),
-        "R_idx": jnp.array(feature_dict["R_idx"].numpy()),
-        "chain_labels": jnp.array(feature_dict["chain_labels"].numpy()),
+        "residue_idx": jnp.array(feature_dict["R_idx"].numpy()),
+        "chain_encoding_all": jnp.array(feature_dict["chain_labels"].numpy()),
     }
 
 

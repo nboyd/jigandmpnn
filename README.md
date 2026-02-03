@@ -20,9 +20,11 @@ uv add git+https://github.com/nboyd/jigandmpnn
 
 ```python
 from jigandmpnn import load_protein_mpnn, load_soluble_mpnn
+from jigandmpnn.modules.model import ProteinMPNN
 
-model = load_protein_mpnn()  # Standard ProteinMPNN
-model = load_soluble_mpnn()  # For soluble proteins
+model = load_protein_mpnn()                # Standard ProteinMPNN
+model = load_soluble_mpnn()                # For soluble proteins
+model = ProteinMPNN.from_pretrained()      # Same as load_protein_mpnn()
 ```
 
 ### Sample sequences
@@ -33,7 +35,6 @@ import jax.numpy as jnp
 from jigandmpnn import load_protein_mpnn
 from jigandmpnn.vendor.ligandmpnn import parse_PDB, featurize
 
-# Load model
 model = load_protein_mpnn()
 
 # Prepare features from PDB
@@ -44,28 +45,54 @@ feature_dict = featurize(protein_dict, model_type="protein_mpnn")
 X = jnp.array(feature_dict["X"].numpy())
 S = jnp.array(feature_dict["S"].numpy())
 mask = jnp.array(feature_dict["mask"].numpy())
-R_idx = jnp.array(feature_dict["R_idx"].numpy())
-chain_labels = jnp.array(feature_dict["chain_labels"].numpy())
+residue_idx = jnp.array(feature_dict["R_idx"].numpy())
+chain_encoding_all = jnp.array(feature_dict["chain_labels"].numpy())
 
 # Sample
 key = jax.random.PRNGKey(42)
 result = model.sample(
-    X=X, S=S, mask=mask, R_idx=R_idx, chain_labels=chain_labels,
-    key=key, temperature=0.1
+    X=X, S=S, mask=mask,
+    residue_idx=residue_idx, chain_encoding_all=chain_encoding_all,
+    key=key, temperature=0.1,
 )
-print(result["S"])  # Sampled sequences [B, L]
+print(result.S)  # Sampled sequences [B, L]
 ```
 
 ### Score sequences
 
 ```python
-key = jax.random.PRNGKey(42)
 result = model.score(
-    X=X, S=S, mask=mask, R_idx=R_idx, chain_labels=chain_labels,
-    key=key, use_sequence=True
+    X=X, S=S, mask=mask,
+    residue_idx=residue_idx, chain_encoding_all=chain_encoding_all,
+    key=jax.random.PRNGKey(42), use_sequence=True,
 )
-print(result["log_probs"])  # Log probabilities [B, L, 21]
+print(result.log_probs)  # Log probabilities [B, L, 21]
 ```
+
+### Encode / decode (mosaic-compatible)
+
+```python
+import jax.nn as jnn
+
+# Encode structure
+h_V, h_E, E_idx = model.encode(
+    X=X, mask=mask,
+    residue_idx=residue_idx, chain_encoding_all=chain_encoding_all,
+)
+
+# Decode with one-hot sequence
+S_onehot = jnn.one_hot(S, 21)
+decoding_order = jax.random.normal(jax.random.PRNGKey(0), mask.shape)
+log_probs = model.decode(
+    S=S_onehot, h_V=h_V, h_E=h_E, E_idx=E_idx,
+    mask=mask, decoding_order=decoding_order,
+)
+
+# Or in one call
+log_probs = model(X, S_onehot, mask, residue_idx, chain_encoding_all, decoding_order)
+```
+
+Both `encode()` and `decode()` accept unbatched inputs (e.g. `X` of shape `[N, 4, 3]`) and will add a batch dimension internally.
 
 ## Available Models
 
@@ -104,6 +131,7 @@ print(list_weights())  # Show all available weights
 - JIT-compilable with `eqx.filter_jit`
 - Autoregressive sampling with `jax.lax.scan`
 - Supports coordinate noise (`augment_eps`) for training
+- Mosaic-compatible `encode()` / `decode()` / `__call__()` interface
 
 ## Benchmarks
 
@@ -121,17 +149,17 @@ import jax
 import equinox as eqx
 
 @eqx.filter_jit
-def sample_batch(model, X, S, mask, R_idx, chain_labels, keys):
+def sample_batch(model, X, S, mask, residue_idx, chain_encoding_all, keys):
     def sample_single(key):
         return model.sample(
-            X=X, S=S, mask=mask, R_idx=R_idx, chain_labels=chain_labels,
-            key=key, temperature=0.1
+            X=X, S=S, mask=mask,
+            residue_idx=residue_idx, chain_encoding_all=chain_encoding_all,
+            key=key, temperature=0.1,
         )
     return jax.vmap(sample_single)(keys)
 
-# Sample 512 sequences in parallel
 keys = jax.random.split(jax.random.PRNGKey(0), 512)
-result = sample_batch(model, X, S, mask, R_idx, chain_labels, keys)
+result = sample_batch(model, X, S, mask, residue_idx, chain_encoding_all, keys)
 ```
 
 Run benchmarks:
